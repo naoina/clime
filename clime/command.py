@@ -30,14 +30,127 @@ class Command(object):
         self.vararg = vararg
         #self.keyword = keyword
 
-        # 1. put the args and defvals into a dict
-        # 2. collect the mode-flags
+        # `args` are the arguments from original function
+        # arg indexed
         self.defaults = {}
-        self.mflags = set()
-        for arg, defval in zip( *map(reversed, (args or [], defvals or [])) ):
-            self.defaults[arg] = defval
-            if isinstance(defval, bool):
-                self.mflags.add(arg)
+        self.modeflags = set()
+        self.refers = {} # options wich bind this arg
+
+        # `opts` are the optional arguments
+        # opt indexed
+        self.metavars = {}
+        self.bindings = {} # it map to arg
+
+        # collect options and default value
+
+        optset = set()
+        self.hasdefidx = len(args) - len(defvals)
+        for i, arg in enumerate(args):
+            if i >= self.hasdefidx:
+                # optional argument (has default)
+                opt = '-' * (1+(len(args)>1)) + arg.replace('_', '-')
+                optset.add(opt)
+                self.bindings[opt] = arg
+                self.refers[arg] = [opt]
+                defval = defvals[i-self.hasdefidx]
+                self.defaults[arg] = defval
+                if isinstance(defval, bool):
+                    self.modeflags.add(arg)
+
+        doc = getdoc(func)
+        if not doc: return
+
+        # collect more options (aliases) and metavars from doc
+
+        for lineoptmetas in getoptmetas(doc):
+            targetoptset = optset & set(om[0] for om in lineoptmetas)
+            if len(targetoptset) > 0:
+                targetopt = targetoptset.pop()
+                targetarg = targetopt.lstrip('-').replace('-', '_')
+            else:
+                continue
+            for opt, meta in lineoptmetas:
+                if meta is not None:
+                    self.metavars[opt] = meta
+                self.bindings[opt] = targetarg
+                if opt != targetopt:
+                    self.refers[targetarg].append(opt)
+
+    def getoptspec(self, opt):
+        '''return a 3-tuple (argname, defaultvalue, type)'''
+
+        def mktypewrapper(type_):
+            def typewrapper(obj):
+                try:
+                    return type_(obj)
+                except ValueError:
+                    raise ScanError("option '%s' must be %s" % (opt, type_.__name__))
+            return typewrapper
+
+        arg = self.bindings.get(opt, opt.lstrip('-'))
+        metavar = self.metavars.get(opt, opt.upper())
+        _type = self.metatypes.get(metavar, self.defautotype)
+        twrapper = mktypewrapper(_type)
+
+        return (arg, twrapper)
+
+    def getdefault(self, opt):
+        arg = self.bindings.get(opt, arg)
+        default = self.defaults.get(arg, object)
+
+        return default
+
+    def scan(self, rawargs=None):
+        '''Scan the `rawargs`, and return a tuple (`pargs`, `kargs`).
+
+        `rawargs` can be `string` or `list`.
+
+        Uses *keyword-first resolving* -- If keyword and positional arguments
+        are at same place, the keyword argument will take this place and push
+        the positional argument to next.
+
+        Example:
+
+        >>> def files(mode='r', *paths):
+        >>>     print mode, paths
+        >>> 
+        >>> files_cmd = Command(files)
+        >>> files_cmd.scan('--mode w f1.txt f2.txt')
+        (['w', 'f1.txt', 'f2.txt'], {})
+        >>> files_cmd('--mode w f1.txt f2.txt')
+        w ('f1.txt', 'f2.txt')    
+
+        If an no-value options is found and the value in default of function is
+        boolean, it will put the opposite boolean into `optargs`.
+
+        >>> def test(b=True, x=None):
+        >>>     print b, x
+        >>> 
+        >>> test_cmd = Command(test)
+        >>> test_cmd('-b')
+        False None
+
+        If duplicate options are found and
+
+        1. the default of function is boolean: it will count this options;
+        2. otherwise: it will put the value into a list.
+
+        >>> test_cmd('-bbb -x first -x second -x third')
+        3 ['first', 'second', 'third']
+
+        .. versionchanged:: 0.1.4
+           Use custom parser instead of `getopt`.
+
+        .. versionchanged:: 0.1.4
+           It is rewritten from `Command.parse` (0.1.3).
+
+        '''
+
+        def nextarg():
+            if rawargs and not rawargs[0].startswith('-'):
+                return rawargs.pop(0)
+            else:
+                raise ScanError("option '%s' needs a value" % opt)
 
         # collect the aliases and metavars
         self.bindings = {}
@@ -142,22 +255,23 @@ class Command(object):
 
                 if plen >= 3 and piece[1] == '-':
                     # keyword option: --options [value]
-                    opt = piece[2:].replace('-', '_')
-                    key = self.bindings.get(opt, opt)
+                    opt = piece
+                    key, type_  = self.getoptspec(opt)
                     vals = kargs.setdefault(key, [])
-                    if key in self.mflags:
+                    if key in self.modeflags:
                         vals.append( None )
                     else:
-                        vals.append( gettype(opt)( nextarg() ) )
+                        vals.append( type_( nextarg() ) )
                     continue
 
                 if plen >= 2:
                     # letter option: -abco[value] or --abco [value]
                     epiece = enumerate(piece); next(epiece)
                     for i, opt in epiece:
-                        key = self.bindings.get(opt, opt)
+                        opt = '-' + opt
+                        key, type_  = self.getoptspec(opt)
                         vals = kargs.setdefault(key, [])
-                        if key in self.mflags:
+                        if key in self.modeflags:
                             vals.append( None )
                         else:
                             if i == plen-1:
@@ -166,7 +280,7 @@ class Command(object):
                             else:
                                 # -abcovalue
                                 val = piece[i+1:]
-                            vals.append( gettype(opt)(val) )
+                            vals.append( type_(val) )
                             break
                     continue
 
