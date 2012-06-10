@@ -293,9 +293,9 @@ class Command(object):
             kargs[key] = val
 
         # toggle the bool default value
-        for mflag in self.mflags:
-            if kargs.get(mflag, 0) is None:
-                kargs[mflag] = not self.defaults[mflag]
+        for modeflag in self.modeflags:
+            if kargs.get(modeflag, 0) is None:
+                kargs[modeflag] = not self.defaults[modeflag]
 
         # copy the default value
         kposes = dict( (k,i) for i, k in enumerate(self.args))
