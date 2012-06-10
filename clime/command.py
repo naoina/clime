@@ -51,10 +51,14 @@ class Command(object):
                 self.metavars[opt] = meta
             opts, metas = zip(*optmetas)
             opts = set(opts)
-            target = (opts & args).pop()
-            opts -= args
-            for opt in opts:
-                self.bindings[opt] = target
+            try:
+                target = (opts & args).pop()
+            except KeyError: # can't find target
+                pass
+            else:
+                opts -= args
+                for opt in opts:
+                    self.bindings[opt] = target
 
     def scan(self, rawargs):
         '''Scan the `rawargs`, and return a tuple (`pargs`, `kargs`).
